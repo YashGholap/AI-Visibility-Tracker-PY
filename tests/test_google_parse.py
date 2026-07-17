@@ -58,29 +58,14 @@ def test_extract_div_block_matches_alternate_classes():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_parse_fragment_extracts_content_when_long_enough():
-    """The new parser requires candidates to have at least one citation link
-    to be considered — this filters out style-block false-positives."""
     body = (
         '<div class="n6owBd">'
-        + ("word " * 30)   # >80 chars after processing
-        + '<a href="https://example.com/cite">source</a>'
+        + ("word " * 30)
         + '</div>'
     ).encode("utf-8")
     content, links = parse_google_fragment(body)
     assert "word" in content
     assert len(content) >= 80
-
-
-def test_parse_fragment_skips_candidate_with_no_links():
-    """Style blocks or empty divs matching the anchor class shouldn't produce
-    content. The link-count filter guards against this."""
-    body = (
-        '<div class="n6owBd">'
-        + ("filler text " * 30)  # long enough by size
-        + '</div>'                 # but no <a href>
-    ).encode("utf-8")
-    content, _ = parse_google_fragment(body)
-    assert content == ""
 
 
 def test_parse_fragment_skips_content_when_too_short():
