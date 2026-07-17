@@ -83,12 +83,20 @@ async def run_cron(engine: Engine, config: Config) -> int:
 
             enriched: list[ScrapeResult] = []
             for r in results:
-                if not r.internal_links:
+                # Drop only if BOTH content and links are empty — a scrape
+                # with content but no links is still useful for mention
+                # counting analytics; drop only when nothing was captured.
+                if not r.internal_links and not r.response_text:
                     log.warning(
                         "cron: dropping empty result  source=%s query=%r",
                         r.source, r.query,
                     )
                     continue
+                if not r.internal_links:
+                    log.warning(
+                        "cron: no links extracted (keeping row)  source=%s query=%r links=0",
+                        r.source, r.query,
+                    )
                 r.project_id = q.project_id
                 r.category = q.category
                 r.intent = q.intent
