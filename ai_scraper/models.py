@@ -34,7 +34,7 @@ class ScrapeResult(BaseModel):
     query: str
     source: str
     internal_links: list[str] = Field(default_factory=list)
-    response_txt: str = ""
+    response_text: str = ""
 
     #set by cron flow
     project_id: str = ""
