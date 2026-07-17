@@ -44,6 +44,12 @@ class Config(BaseSettings):
         description="Comma-separated platform names to run; empty = all.",
     )
 
+    query_limit: int = Field(
+        default=0,
+        description="Cap number of queries processed by cron. 0 = no limit.",
+        ge=0,
+    )
+
     # --- splitter ---
     max_competitors: int = Field(default=10, ge=1, le=50)
     output_schema: str = Field(default="app_ranking")

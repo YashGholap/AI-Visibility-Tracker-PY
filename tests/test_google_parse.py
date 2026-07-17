@@ -60,7 +60,7 @@ def test_extract_div_block_matches_alternate_classes():
 def test_parse_fragment_extracts_content_when_long_enough():
     body = (
         '<div class="n6owBd">'
-        + ("word " * 30)   # >80 chars after processing
+        + ("word " * 30)
         + '</div>'
     ).encode("utf-8")
     content, links = parse_google_fragment(body)

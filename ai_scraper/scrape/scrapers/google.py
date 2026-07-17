@@ -53,6 +53,13 @@ _ADL_ANSWER_START_RE = re.compile(
     r'(?i)<div[^>]+class="[^"]*(?:n6owBd|LangJde|wDYxhc|IVvmDb|pWvJNd)[^"]*"'
 )
 
+# Strip <style>...</style> and <script>...</script> before anchor matching.
+# Class names in CSS/JS files can otherwise collide with our answer-container
+# selector and cause us to walk a style block instead of the AI overview.
+_STYLE_SCRIPT_RE = re.compile(
+    r"(?is)<(style|script)[^>]*>.*?</\1>"
+)
+
 # Div-nesting counters used by _extract_div_block.
 _DIV_OPEN_RE = re.compile(r"(?i)<div[\s>]")
 _DIV_CLOSE_RE = re.compile(r"(?i)</div>")
@@ -121,44 +128,60 @@ class GoogleAIScraper:
         except Exception:  # noqa: BLE001
             pass
 
-        # ── Phase 3: wait for fragments ────────────────────────────────────
+        # ── Phase 4: wait for fragments AND for DOM content to stabilize ───
         try:
             await asyncio.wait_for(fragment_seen.wait(), timeout=_FRAGMENT_TIMEOUT_S)
-            # After first fragment, keep listening briefly for additional ones
-            # (Google can split the AI overview across multiple responses).
-            await asyncio.sleep(3.0)
         except asyncio.TimeoutError:
             log.warning("google: no async fragment within %.1fs", _FRAGMENT_TIMEOUT_S)
+
+        # Google's AI Mode streams content over time. Poll the answer
+        # container's size every 2s; stop when it stops growing for 3
+        # consecutive polls (~6s of stability). Cap total wait at 30s.
+        prev_size = -1
+        stable_count = 0
+        max_polls = 15
+        for i in range(max_polls):
+            await asyncio.sleep(2.0)
+            try:
+                current_size = await page.evaluate(_DOM_SIZE_PROBE_JS)
+            except Exception:  # noqa: BLE001
+                current_size = 0
+            log.debug("google: poll %d/%d size=%d", i + 1, max_polls, current_size)
+            if current_size == prev_size and current_size > 0:
+                stable_count += 1
+                if stable_count >= 3:
+                    log.info("google: content stable at %d chars", current_size)
+                    break
+            else:
+                stable_count = 0
+            prev_size = current_size
 
         # Stop listening so the DOM fallback doesn't race with the handler.
         page.remove_listener("response", _on_response)
 
-        # ── Phase 4: parse the best fragment ───────────────────────────────
+        # ── Phase 5: DOM extraction (content) + fragment parse (links) ─────
+        # Content comes from the rendered DOM — the AI Mode answer container's
+        # innerText. This captures everything the user sees, including bulleted
+        # sections and section headings whose class names change between queries.
+        #
+        # Links still come from parsing intercepted fragments — the fragment
+        # has full citation URLs while the DOM only shows short display names.
         content = ""
+        try:
+            content = await page.evaluate(_DOM_CONTENT_JS_V2)
+            log.info("google DOM: content=%d chars", len(content))
+        except Exception as e:  # noqa: BLE001
+            log.warning("google: DOM extraction failed: %s", e)
+
         links: list[str] = []
-
-        if fragments:
-            largest = max(fragments, key=lambda f: len(f[1]))
-            log.info(
-                "google: parsing largest fragment url=%s size=%d",
-                largest[0], len(largest[1]),
-            )
-            content, links = parse_google_fragment(largest[1])
-            log.info(
-                "google fragment: content=%d chars links=%d", len(content), len(links)
-            )
-
-        # ── Phase 5: DOM fallback ──────────────────────────────────────────
-        if not content and not links:
-            log.info("google: no fragment content, falling back to DOM")
-            await asyncio.sleep(3.0)
-            content, links = await _google_dom_fallback(page)
-            log.info(
-                "google DOM fallback: content=%d chars links=%d",
-                len(content), len(links),
-            )
-
-        await page.close()
+        seen_links: set[str] = set()
+        for _url, body in fragments:
+            _content, frag_links = parse_google_fragment(body)
+            for link in frag_links:
+                if link not in seen_links:
+                    seen_links.add(link)
+                    links.append(link)
+        log.info("google fragments: total unique links=%d", len(links))
 
         if not content and not links:
             raise ExtractionError("no content or links extracted from google")
@@ -175,46 +198,75 @@ class GoogleAIScraper:
 def parse_google_fragment(body: bytes) -> tuple[str, list[str]]:
     """Parse an ADL response body → (content_text, links).
 
-    Ports Go's parseGoogleFragment. Content via div-depth-tracked block
-    extraction; links via href regex over the full body (class-independent).
+    Google's AI Mode answer is delivered as a series of sibling <div> blocks,
+    each matching our anchor regex. We collect ALL of them, dedupe substring
+    overlaps, and merge in document order.
+
+    <style>/<script> blocks are stripped up front so class-name references
+    inside CSS/JS can't match the anchor.
     """
     raw = body.decode("utf-8", errors="replace")
 
-    content = ""
-    answer_html = _extract_div_block(raw, _ADL_ANSWER_START_RE)
-    if answer_html:
-        text = _HTML_TAG_RE.sub(" ", answer_html)
-        text = _WHITESPACE_RE.sub(" ", text).strip()
-        if len(text) >= 80:
-            content = text
+    stripped = _STYLE_SCRIPT_RE.sub("", raw)
 
+    candidates: list[tuple[int, str]] = []
+    for m in _ADL_ANSWER_START_RE.finditer(stripped):
+        block_html = _walk_div_block(stripped, m.start(), m.end())
+        if not block_html:
+            continue
+        text = _HTML_TAG_RE.sub(" ", block_html)
+        text = _WHITESPACE_RE.sub(" ", text).strip()
+        if len(text) < 20:  # drop empty/near-empty candidates
+            continue
+        candidates.append((m.start(), text))
+
+    # Merge candidates by document order, dropping substrings.
+    content = _merge_dedup(candidates)
+
+    # Extract citation links from the full raw body (class-independent).
     links: list[str] = []
-    seen: set[str] = set()
+    seen_links: set[str] = set()
     for m in _HREF_RE.finditer(raw):
         u = m.group(1)
         if any(dom in u for dom in _SKIP_DOMAINS):
             continue
-        if u in seen:
+        if u in seen_links:
             continue
-        seen.add(u)
+        seen_links.add(u)
         links.append(u)
 
     return content, links
 
 
-def _extract_div_block(raw: str, anchor: re.Pattern[str]) -> str:
-    """Find opening tag matching anchor, then walk forward counting <div>
-    opens/closes to find its matching closing tag. Returns the full HTML
-    of that div block.
+def _merge_dedup(candidates: list[tuple[int, str]]) -> str:
+    """Merge candidates in document order, dropping substring duplicates.
 
-    Ports Go's extractDivBlock. More reliable than a byte window.
+    Google's ADL can nest blocks, so a candidate's text may be contained in
+    a sibling or ancestor. We keep candidates whose text adds something new.
     """
-    m = anchor.search(raw)
-    if m is None:
+    if not candidates:
         return ""
 
-    start = m.start()
-    pos = m.end()  # scan after the opening tag
+    # Document order.
+    by_pos = sorted(candidates, key=lambda t: t[0])
+
+    accepted: list[str] = []
+    for _pos, text in by_pos:
+        # Skip if this text is already contained in any accepted candidate.
+        if any(text in a for a in accepted):
+            continue
+        # Drop any accepted candidate that's now a substring of this one.
+        accepted = [a for a in accepted if a not in text]
+        accepted.append(text)
+
+    return "\n\n".join(accepted)
+
+
+def _walk_div_block(raw: str, start: int, after_opening_tag: int) -> str:
+    """Walk forward from `after_opening_tag`, tracking div nesting depth.
+    Return the full HTML from `start` to the matching closing </div>.
+    Returns empty string if the block doesn't close cleanly."""
+    pos = after_opening_tag
     depth = 1
 
     while pos < len(raw) and depth > 0:
@@ -237,9 +289,14 @@ def _extract_div_block(raw: str, anchor: re.Pattern[str]) -> str:
             if depth == 0:
                 return raw[start:pos]
 
-    # depth never reached 0 — truncate at 80 KB from anchor
-    end = min(start + 80_000, len(raw))
-    return raw[start:end]
+    return ""
+
+def _extract_div_block(raw: str, anchor: re.Pattern[str]) -> str:
+    """Find the first match of anchor, then walk the div block."""
+    m = anchor.search(raw)
+    if m is None:
+        return ""
+    return _walk_div_block(raw, m.start(), m.end())
 
 
 def _clean_links(links: list[str]) -> list[str]:
@@ -280,37 +337,57 @@ def _clean_links(links: list[str]) -> list[str]:
 # DOM fallback — kept only as a safety net.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_DOM_CONTENT_JS = """
+_DOM_CONTENT_JS_V2 = """
 (() => {
-    const sels = [
-        ".n6owBd", ".awi2gc", ".jKhXsc", ".wDYxhc",
-        ".pWvJNd", ".IVvmDb", ".LGOjhe", ".vxQmIe"
+    // AI Mode answer container. Google renames classes frequently; we cast
+    // a wide net including old and new anchor classes, then pick the biggest.
+    const selectors = [
+        // Current (Oct 2025)
+        '.EIYajf', '.g7lqo', '.Wgphwb',
+        // Older, keep for backwards compat
+        '.n6owBd', '.cRH23c',
+        // Structural
+        '[data-container-id]',
     ];
-    for (const sel of sels) {
-        const els = document.querySelectorAll(sel);
-        if (!els.length) continue;
-        const text = Array.from(els).map(e => e.innerText).join("\\n").trim();
-        if (text.length > 30) return text;
+    const seen = new Set();
+    const candidates = [];
+    for (const sel of selectors) {
+        for (const el of document.querySelectorAll(sel)) {
+            if (seen.has(el)) continue;
+            seen.add(el);
+            const text = el.innerText || '';
+            if (text.length >= 50) {
+                candidates.push({el, text, size: text.length});
+            }
+        }
     }
-    return "";
+    if (!candidates.length) return '';
+    // Biggest single container wins — this is the AI Mode answer wrapper.
+    candidates.sort((a, b) => b.size - a.size);
+    return candidates[0].text;
 })()
 """
 
-_DOM_LINKS_JS_TEMPLATE = """
-(() => Array.from(document.querySelectorAll(%s))
-    .map(a => a.href)
-    .filter(h => h && h.startsWith("http") && !h.includes("google.com")))()
+# _DOM_LINKS_JS_TEMPLATE = """
+# (() => Array.from(document.querySelectorAll(%s))
+#     .map(a => a.href)
+#     .filter(h => h && h.startsWith("http") && !h.includes("google.com")))()
+# """
+
+
+_DOM_SIZE_PROBE_JS = """
+(() => {
+    const selectors = [
+        '.EIYajf', '.g7lqo', '.Wgphwb', '.n6owBd', '.cRH23c',
+        '[data-container-id]',
+    ];
+    let maxSize = 0;
+    for (const sel of selectors) {
+        for (const el of document.querySelectorAll(sel)) {
+            const s = (el.innerText || '').length;
+            if (s > maxSize) maxSize = s;
+        }
+    }
+    return maxSize;
+})()
 """
-
-
-async def _google_dom_fallback(page) -> tuple[str, list[str]]:
-    content = await page.evaluate(_DOM_CONTENT_JS)
-
-    for sel in ("a.NDNGvf", ".EJw9bc a.NDNGvf", ".bTFeG a.NDNGvf"):
-        js = _DOM_LINKS_JS_TEMPLATE % (repr(sel),)
-        links = await page.evaluate(js)
-        if links:
-            log.info("google DOM fallback: %d links via %s", len(links), sel)
-            return content, links
-
-    return content, []
