@@ -1,30 +1,42 @@
 """Perplexity scraper.
 
 URL access: perplexity.ai/search?q=<query> redirects to /search/<uuid>.
-No login required for anonymous access. No CAPTCHA observed as of Nov 2025
-from datacenter/residential IPs.
+No login required for anonymous access, but Perplexity does enforce a
+quota — after N anonymous queries per IP/cookie, the page renders a
+"Sign up and repeat your request" gate instead of an answer.
 
 Content extraction: document.body.innerText — same approach as google.
-Perplexity's answer container is the biggest text block on the page, and
-body innerText matches it closely.
+Perplexity's answer container is the biggest text block on the page,
+and body innerText matches it closely.
 
-Wait strategy: DOM stability polling. Content streams over 10-15s; we poll
-every 2s and consider content stable after 3 consecutive equal-size polls.
+Wait strategy: DOM stability polling. Content streams over 10-15s; we
+poll every 2s and consider content stable after 3 consecutive equal-
+size polls.
 
-Link extraction: DOM scrape of anchor hrefs pointing to external domains.
-Perplexity places citations inline in the rendered DOM.
+Link extraction: DOM scrape of anchor hrefs. We collect from BOTH the
+Answer tab (inline citations) AND the Links tab (full source list),
+then union and dedupe.
+
+Gate handling: when we detect the sign-up gate (short content matching
+known markers), raise NeedsFreshContextError so the orchestrator
+retries with a fresh BrowserContext (no cookies). If the gate is
+IP-based rather than cookie-based, all retries will also gate and the
+scrape gracefully fails for that query.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from urllib.parse import quote_plus
 
 from playwright.async_api import BrowserContext
 
 from ai_scraper.models import ScrapeResult
-from ai_scraper.scrape.scrapers.base import ExtractionError, TransientError
+from ai_scraper.scrape.scrapers.base import (
+    ExtractionError,
+    NeedsFreshContextError,
+    TransientError,
+)
 
 log = logging.getLogger(__name__)
 
@@ -32,30 +44,31 @@ _NAV_TIMEOUT_MS = 30_000
 _STABILITY_MAX_POLLS = 20   # 20 * 2s = 40s max
 _STABILITY_REQUIRED = 3     # 3 consecutive equal polls = stable
 
+
 class PerplexityScraper:
     name: str = "perplexity"
-    
+
     async def scrape(self, context: BrowserContext, query: str) -> ScrapeResult:
         result = ScrapeResult(query=query, source=self.name)
         page = await context.new_page()
-        
+
         # ── Phase 1: navigate to search URL ────────────────────────────────
         search_url = f"https://www.perplexity.ai/search?q={quote_plus(query)}"
         log.info("perplexity: navigate → %s", search_url)
         try:
             await page.goto(search_url, timeout=_NAV_TIMEOUT_MS)
-        except Exception as e: # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             raise TransientError(f"navigate failed: {e}") from e
-        
+
         # Perplexity redirects /search?q=... to /search/<uuid>. Wait briefly
         # for redirect + first paint before starting stability polls.
         await asyncio.sleep(3)
-        
+
         # Detect signals of failure early.
         current_url = page.url
         if "cloudflare" in current_url.lower() or "/challenge" in current_url:
             raise TransientError(f"perplexity antibot challenge: {current_url}")
-        
+
         # ── Phase 2: wait for content stability ────────────────────────────
         prev_size = -1
         stable_count = 0
@@ -69,18 +82,32 @@ class PerplexityScraper:
             if current_size == prev_size and current_size > 100:
                 stable_count += 1
                 if stable_count >= _STABILITY_REQUIRED:
-                    log.info("perplexity: content stable at %d chars", current_size)
+                    log.info(
+                        "perplexity: content stable at %d chars", current_size,
+                    )
                     break
             else:
                 stable_count = 0
             prev_size = current_size
-            
-        # ── Phase 3: extract content + links ───────────────────────────────
+
+        # ── Phase 3: extract content ───────────────────────────────────────
         try:
             content = await page.evaluate(_DOM_CONTENT_JS)
         except Exception as e:  # noqa: BLE001
             log.warning("perplexity: content extraction failed: %s", e)
             content = ""
+
+        # Detect Perplexity's "sign up to continue" gate. When the anonymous
+        # quota is exhausted, the answer container renders a tiny prompt
+        # instead of the real answer. Fresh context (no cookies) may bypass.
+        if content and _is_signup_gate(content):
+            log.warning(
+                "perplexity: sign-up gate detected, requesting fresh context",
+            )
+            await page.close()
+            raise NeedsFreshContextError(
+                "perplexity anonymous quota gate hit",
+            )
 
         # ── Phase 3a: inline citations from the Answer tab ─────────────────
         # These show up in the visible answer text and preserve positional
@@ -123,12 +150,15 @@ class PerplexityScraper:
         await page.close()
 
         if not content and not links:
-            raise ExtractionError("no content or links extracted from perplexity")
+            raise ExtractionError(
+                "no content or links extracted from perplexity",
+            )
 
         result.response_text = content
         result.internal_links = links
         return result
-    
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # JS extraction primitives
 # ─────────────────────────────────────────────────────────────────────────────
@@ -136,14 +166,14 @@ class PerplexityScraper:
 _DOM_CONTENT_JS = """
 (() => {
     let text = document.body.innerText || '';
-    
+
     // Strip trailing cookie-policy blob if present (stable text).
     const cookieMarker = 'Cookie Policy';
     const cookieIdx = text.indexOf(cookieMarker);
     if (cookieIdx > 0) {
         text = text.slice(0, cookieIdx);
     }
-    
+
     // Strip leading nav chrome. Perplexity's answer body starts with
     // the query being echoed back OR "Searching the web". Find whichever
     // comes first and take from there.
@@ -156,11 +186,10 @@ _DOM_CONTENT_JS = """
         }
     }
     if (startIdx > 0) {
-        // Skip past the marker line
         const nlAfter = text.indexOf('\\n', startIdx);
         if (nlAfter > 0) text = text.slice(nlAfter + 1);
     }
-    
+
     return text.trim();
 })()
 """
@@ -180,7 +209,6 @@ _DOM_LINKS_JS = """
 
 _CLICK_LINKS_TAB_JS = """
 (() => {
-    // Find the "Links" tab. Perplexity uses a tab button with visible text.
     const candidates = document.querySelectorAll(
         'button, a, [role="tab"], [role="button"]'
     );
@@ -197,6 +225,7 @@ _CLICK_LINKS_TAB_JS = """
 
 _SKIP_DOMAINS = (
     "perplexity.ai",
+    "perplexity.com",
     "apple.com/apple-account",
     "accounts.google",
     "facebook.com",
@@ -204,9 +233,30 @@ _SKIP_DOMAINS = (
     "x.com/i/",
 )
 
+_GATE_MARKERS = (
+    "sign up and repeat",
+    "sign up to continue",
+    "you've reached your limit",
+    "log in to continue",
+)
+
+
+def _is_signup_gate(content: str) -> bool:
+    """True if the extracted 'content' looks like Perplexity's anonymous
+    quota gate rather than a real answer.
+
+    Heuristics:
+      - Very short (<300 chars): real answers are always 800+.
+      - Contains any of the well-known gate markers.
+    """
+    if len(content) > 300:
+        return False
+    lowered = content.lower()
+    return any(marker in lowered for marker in _GATE_MARKERS)
+
 
 def _clean_links(raw: list[str]) -> list[str]:
-    """Dedupe + strip perplexity's own domain + strip tracking params."""
+    """Dedupe + strip Perplexity's own domain + strip tracking params."""
     from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
     tracking = {
@@ -219,7 +269,6 @@ def _clean_links(raw: list[str]) -> list[str]:
         link = link.strip()
         if not link:
             continue
-        # Skip perplexity's own paths and known-noise domains.
         if any(dom in link for dom in _SKIP_DOMAINS):
             continue
         parsed = urlparse(link)
