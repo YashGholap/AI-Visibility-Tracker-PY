@@ -11,6 +11,7 @@ import logging
 from ai_scraper.models import ScrapeResult
 from ai_scraper.scrape.browser.pool import BrowserPool
 from ai_scraper.scrape.scrapers.registry import get_scraper, resolve_platforms
+from ai_scraper.scrape.scrapers.base import NeedsFreshContextError
 
 log = logging.getLogger(__name__)
 
@@ -29,22 +30,36 @@ async def run_query(
     """
     resolved = resolve_platforms(platforms)
 
+    _MAX_RETRIES = 3
+
     async def _one(name: str) -> ScrapeResult | None:
         scraper = get_scraper(name)
-        async with pool.context() as ctx:
-            try:
-                return await asyncio.wait_for(
-                    scraper.scrape(ctx, query),
-                    timeout=per_platform_timeout_s,
-                )
-            except asyncio.TimeoutError:
-                log.warning("[%s] timed out after %.0fs", name, per_platform_timeout_s)
-                return None
-            except Exception as e:  # noqa: BLE001
-                log.exception("[%s] scrape failed: %r", name, e)
-                import traceback
-                traceback.print_exc()
-                return None
+        last_error: Exception | None = None
+        for attempt in range(_MAX_RETRIES):
+            async with pool.context() as ctx:
+                try:
+                    return await asyncio.wait_for(
+                        scraper.scrape(ctx, query),
+                        timeout=per_platform_timeout_s,
+                    )
+                except NeedsFreshContextError as e:
+                    log.warning(
+                        "[%s] gated on attempt %d/%d, retrying with fresh context",
+                        name, attempt + 1, _MAX_RETRIES,
+                    )
+                    last_error = e
+                    # loop → next attempt gets a new context
+                except asyncio.TimeoutError:
+                    log.warning("[%s] timed out after %.0fs", name, per_platform_timeout_s)
+                    return None
+                except Exception:  # noqa: BLE001
+                    log.exception("[%s] scrape failed", name)
+                    return None
+        log.warning(
+            "[%s] exhausted %d attempts with fresh contexts, giving up: %s",
+            name, _MAX_RETRIES, last_error,
+        )
+        return None
 
     results = await asyncio.gather(*(_one(name) for name in resolved))
     return [r for r in results if r is not None]
