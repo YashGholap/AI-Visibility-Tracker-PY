@@ -93,6 +93,53 @@ def split() -> None:
     if any(s.status.startswith("Error") for s in summaries):
         raise typer.Exit(code=1)
 
+@app.command()
+def run_all() -> None:
+    """Weekly workflow: scrape all queries, then split into ranking tables.
+
+    Fails fast — if scrape fails, split is skipped and the process exits
+    non-zero so cron can alert. Same env var interface as `scrape` and
+    `split` individually.
+    """
+    _init_logging()
+    import logging
+    log = logging.getLogger("ai_scraper.run_all")
+
+    # Delayed imports so this subcommand doesn't pay the browser import cost
+    # unless it's actually running.
+    from ai_scraper.scrape.cron import run_cron
+    from ai_scraper.split.pipeline import run_split
+    from ai_scraper.split.cli import format_summary_table
+
+    config = load_config()
+    engine = get_engine(config)
+
+    # ── Phase 1: scrape ────────────────────────────────────────────────
+    log.info("run_all: starting scrape")
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    try:
+        inserted = asyncio.run(run_cron(engine, config))
+        log.info("run_all: scrape done inserted=%d", inserted)
+    except Exception:
+        log.exception("run_all: scrape failed, aborting split")
+        raise typer.Exit(code=1)
+
+    # ── Phase 2: split ─────────────────────────────────────────────────
+    log.info("run_all: starting split")
+    try:
+        summaries = run_split(engine, config)
+        typer.echo(format_summary_table(summaries))
+    except Exception:
+        log.exception("run_all: split failed")
+        raise typer.Exit(code=1)
+
+    if any(s.status.startswith("Error") for s in summaries):
+        log.error("run_all: one or more projects errored during split")
+        raise typer.Exit(code=1)
+
+    log.info("run_all: complete")
+
 
 if __name__ == "__main__":
     app()
