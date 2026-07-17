@@ -26,6 +26,11 @@ class BlockedError(ScrapeError):
 
 class ExtractionError(ScrapeError):
     """Page loaded but expected structure wasn't found. Signals a DOM change."""
+    
+class NeedsFreshContextError(ScrapeError):
+    """Signal that the current BrowserContext looks gated (Cloudflare, login).
+    Orchestrator should retry with a fresh context. Different from
+    TransientError which is any-context retry."""
 
 @runtime_checkable
 class Scraper(Protocol):
@@ -33,3 +38,4 @@ class Scraper(Protocol):
 
     async def scrape(self, context: BrowserContext, query: str) -> ScrapeResult:
         ...
+        
