@@ -1,0 +1,82 @@
+"""Application configuration.
+
+Single source of truth for all runtime configuration. Every module receives
+a Config instance as a parameter — no module reads os.environ directly.
+
+Reads discrete DB fields from env vars (MYSQL_HOST, MYSQL_PORT, ...) and
+composes them into a SQLAlchemy URL via URL.create(), which handles special
+characters in passwords correctly.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import URL
+
+
+class Config(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=None,  # set dynamically in load_config()
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # --- database (discrete fields; URL is composed in load_config) ---
+    mysql_host: str = Field(...)
+    mysql_port: int = Field(default=3306)
+    mysql_user: str = Field(...)
+    mysql_password: str = Field(...)
+    mysql_database: str = Field(...)
+
+    # Composed at load_config() time; not read from env.
+    mysql_url: str = ""
+
+    # --- scrape/split filtering ---
+    project_id: str = Field(
+        default="",
+        description="Filter to one project ID; empty = all projects.",
+    )
+    platforms: str = Field(
+        default="",
+        description="Comma-separated platform names to run; empty = all.",
+    )
+
+    # --- splitter ---
+    max_competitors: int = Field(default=10, ge=1, le=50)
+    output_schema: str = Field(default="app_ranking")
+    table_prefix: str = Field(default="ai_visi_")
+    process_all_projects: bool = Field(default=True)
+
+    # --- browser ---
+    browser_headless: bool = Field(default=True)
+    browser_pool_size: int = Field(default=1, ge=1, le=8)
+    per_platform_timeout_seconds: int = Field(default=180, ge=30, le=600)
+
+
+def load_config() -> Config:
+    """Load config, honoring the ENV_FILE env var like the Go binary does."""
+    env_file = os.environ.get("ENV_FILE", "").strip()
+    if env_file:
+        env_path = Path(env_file).resolve()
+        if not env_path.is_file():
+            raise SystemExit(f"ENV_FILE points to non-existent file: {env_path}")
+        Config.model_config["env_file"] = str(env_path)
+
+    cfg = Config()  # type: ignore[call-arg]
+
+    # Compose SQLAlchemy URL from discrete fields.
+    # URL.create() handles escaping of special characters in passwords.
+    url = URL.create(
+        drivername="mysql+pymysql",
+        username=cfg.mysql_user,
+        password=cfg.mysql_password,
+        host=cfg.mysql_host,
+        port=cfg.mysql_port,
+        database=cfg.mysql_database,
+    )
+    cfg.mysql_url = url.render_as_string(hide_password=False)
+
+    return cfg
