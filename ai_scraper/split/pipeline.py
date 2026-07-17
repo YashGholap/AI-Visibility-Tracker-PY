@@ -129,7 +129,7 @@ def split_one_project(
         )
 
     if not vis_rows:
-        log.warning("no ai_visibility data today for %s", project.project_name)
+        log.info("no ai_visibility data today for %s", project.project_name)
         return ProjectSummary(
             project_id=project.project_id,
             project_name=project.project_name,

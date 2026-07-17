@@ -42,9 +42,22 @@ def ondemand() -> None:
 
 @app.command()
 def split() -> None:
-    """[Phase 1 stub] Splitter flow."""
-    typer.echo("split: not implemented yet", err=True)
-    raise typer.Exit(code=1)
+    """Run the splitter: read today's ai_visibility rows, rank client and
+    competitors per project, write into per-project tables.
+
+    Honors PROJECT_ID env var (or config.project_id) as a project filter.
+    """
+    from ai_scraper.split.cli import format_summary_table
+    from ai_scraper.split.pipeline import run_split
+
+    config = load_config()
+    engine = get_engine(config)
+    summaries = run_split(engine, config)
+    typer.echo(format_summary_table(summaries))
+
+    # Non-zero exit if any project errored, so cron can alert on failure.
+    if any(s.status.startswith("Error") for s in summaries):
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
