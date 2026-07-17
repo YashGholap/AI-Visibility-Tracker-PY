@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine
 
 from ai_scraper.models import ScrapeResult
 from ai_scraper.storage.migrations import ensure_ai_visibility
