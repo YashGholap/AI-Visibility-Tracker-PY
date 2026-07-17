@@ -8,6 +8,8 @@ from ai_scraper.scrape.scrapers.google import GoogleAIScraper
 from ai_scraper.scrape.scrapers.mock import MockScraper
 from ai_scraper.scrape.scrapers.perplexity import PerplexityScraper
 from ai_scraper.scrape.scrapers.chatgpt import ChatGPTScraper
+from ai_scraper.scrape.scrapers.gemini import GeminiScraper
+
 
 
 def _google_factory() -> Scraper:
@@ -23,8 +25,13 @@ def _perplexity_factory() -> Scraper:
 def _chatgpt_factory() -> Scraper:
     return ChatGPTScraper()
 
+def _gemini_factory() -> Scraper:
+    return GeminiScraper()
+
+
 _FACTORIES: dict[str, Callable[[], Scraper]] = {
     "chatgpt": _chatgpt_factory,
+    "gemini" : _gemini_factory,
     "google_ai": _google_factory,
     "perplexity": _perplexity_factory,
     "mock": _mock_factory,   # hidden — must be requested explicitly
