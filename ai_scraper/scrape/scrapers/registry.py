@@ -6,6 +6,7 @@ from collections.abc import Callable
 from ai_scraper.scrape.scrapers.base import Scraper
 from ai_scraper.scrape.scrapers.google import GoogleAIScraper
 from ai_scraper.scrape.scrapers.mock import MockScraper
+from ai_scraper.scrape.scrapers.perplexity import PerplexityScraper
 
 
 def _google_factory() -> Scraper:
@@ -15,9 +16,12 @@ def _google_factory() -> Scraper:
 def _mock_factory() -> Scraper:
     return MockScraper()
 
+def _perplexity_factory() -> Scraper:
+    return PerplexityScraper()
 
 _FACTORIES: dict[str, Callable[[], Scraper]] = {
     "google_ai": _google_factory,
+    "perplexity": _perplexity_factory,
     "mock": _mock_factory,   # hidden — must be requested explicitly
 }
 
