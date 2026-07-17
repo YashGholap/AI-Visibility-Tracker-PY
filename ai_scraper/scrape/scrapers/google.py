@@ -99,28 +99,13 @@ class GoogleAIScraper:
 
         page.on("response", _on_response)
 
-        # ── Phase 2: warm-up to google.com homepage first ──────────────────
-        # A cold headless Chromium hitting a udm=50 URL directly is a very
-        # strong bot signal. Visiting the homepage first (getting cookies,
-        # consent state) mimics a real user's journey and dramatically
-        # reduces reCAPTCHA challenges.
-        try:
-            await page.goto(
-                "https://www.google.com/",
-                wait_until="domcontentloaded",
-                timeout=20_000,
-            )
-            await asyncio.sleep(1.5)  # let cookies settle
-        except Exception as e:  # noqa: BLE001
-            log.warning("google: warm-up navigation failed: %s", e)
-
-        # ── Phase 3: navigate to the AI Mode URL ───────────────────────────
+        # ── Phase 2: navigate to the AI Mode URL ───────────────────────────
         search_url = (
             f"https://www.google.com/search?q={quote_plus(query)}&udm=50"
         )
         log.info("google: navigate → %s", search_url)
         try:
-            await page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
+            await page.goto(search_url, timeout=30_000)
         except Exception as e:  # noqa: BLE001
             raise TransientError(f"navigate failed: {e}") from e
 
@@ -136,7 +121,7 @@ class GoogleAIScraper:
         except Exception:  # noqa: BLE001
             pass
 
-        # ── Phase 4: wait for fragments ────────────────────────────────────
+        # ── Phase 3: wait for fragments ────────────────────────────────────
         try:
             await asyncio.wait_for(fragment_seen.wait(), timeout=_FRAGMENT_TIMEOUT_S)
             # After first fragment, keep listening briefly for additional ones
@@ -148,7 +133,7 @@ class GoogleAIScraper:
         # Stop listening so the DOM fallback doesn't race with the handler.
         page.remove_listener("response", _on_response)
 
-        # ── Phase 5: parse the best fragment ───────────────────────────────
+        # ── Phase 4: parse the best fragment ───────────────────────────────
         content = ""
         links: list[str] = []
 
@@ -163,7 +148,7 @@ class GoogleAIScraper:
                 "google fragment: content=%d chars links=%d", len(content), len(links)
             )
 
-        # ── Phase 6: DOM fallback ──────────────────────────────────────────
+        # ── Phase 5: DOM fallback ──────────────────────────────────────────
         if not content and not links:
             log.info("google: no fragment content, falling back to DOM")
             await asyncio.sleep(3.0)

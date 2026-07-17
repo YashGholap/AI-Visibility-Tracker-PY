@@ -12,7 +12,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from playwright.async_api import Browser, BrowserContext, Playwright
+from patchright.async_api import Browser, BrowserContext, Playwright
 
 from ai_scraper.scrape.browser.launcher import (
     DEFAULT_USER_AGENT,
@@ -63,19 +63,25 @@ class BrowserPool:
         if self._browser is None:
             raise RuntimeError('BrowserPool.start() must be called first')
         
-        ctx = await self._browser.new_context(
-            user_agent=user_agent or DEFAULT_USER_AGENT,
-            viewport= viewport or DEFAULT_VIEWPORT,
-            locale="en-US",
-        )
+        ctx_kwargs: dict = {
+            "viewport": viewport or DEFAULT_VIEWPORT,
+            "locale": "en-US",
+        }
+        # Only override UA if caller explicitly asked. Patchright works best
+        # when the UA matches the browser it's actually driving — an override
+        # to a mismatched UA is itself a detection signal.
+        if user_agent:
+            ctx_kwargs["user_agent"] = user_agent
 
-        if block_media:
-            async def _route(route):
-                if route.request.resource_type in _BLOCKED_RESOURCES:
-                    await route.abort()
-                else:
-                    await route.continue_()
-            await ctx.route("**/*", _route)
+        ctx = await self._browser.new_context(**ctx_kwargs)
+
+        # if block_media:
+        #     async def _route(route):
+        #         if route.request.resource_type in _BLOCKED_RESOURCES:
+        #             await route.abort()
+        #         else:
+        #             await route.continue_()
+        #     await ctx.route("**/*", _route)
 
         try:
             yield ctx
@@ -89,7 +95,7 @@ class BrowserPool:
 @asynccontextmanager
 async def open_pool(headless: bool = True) -> AsyncIterator[BrowserPool]:
     """Convenience: start Playwright + pool, tear both down together."""
-    from playwright.async_api import async_playwright
+    from patchright.async_api import async_playwright
 
     async with async_playwright() as pw:
         pool = BrowserPool(pw, headless=headless)
