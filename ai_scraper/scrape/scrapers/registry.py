@@ -1,27 +1,35 @@
 """Central platform registry. Adding a platform is one line here."""
 from __future__ import annotations
 
-from playwright.async_api import BrowserContext
+from collections.abc import Callable
 
 from ai_scraper.scrape.scrapers.base import Scraper
 from ai_scraper.scrape.scrapers.google import GoogleAIScraper
-
+from ai_scraper.scrape.scrapers.mock import MockScraper
 
 
 def _google_factory() -> Scraper:
     return GoogleAIScraper()
 
 
-# Adding chatgpt/gemini/perplexity in Phase 2 is one line per platform here.
-_FACTORIES: dict[str, callable] = {
+def _mock_factory() -> Scraper:
+    return MockScraper()
+
+
+_FACTORIES: dict[str, Callable[[], Scraper]] = {
     "google_ai": _google_factory,
+    "mock": _mock_factory,   # hidden — must be requested explicitly
 }
 
+
 def all_platforms() -> list[str]:
-    return sorted(_FACTORIES.keys())
+    """All non-hidden platforms. Mock is hidden so it doesn't show up in
+    'all' expansion — must be requested explicitly."""
+    return sorted(k for k in _FACTORIES if k != "mock")
+
 
 def resolve_platforms(requested: list[str] | None) -> list[str]:
-    """Empty/None → all. Unknown → ValueError (matches Go behaviour)."""
+    """Empty/None → all (excluding hidden). Unknown → ValueError."""
     if not requested:
         return all_platforms()
 
@@ -30,7 +38,7 @@ def resolve_platforms(requested: list[str] | None) -> list[str]:
     for name in requested:
         if name not in _FACTORIES:
             raise ValueError(
-                f"unknown platform {name!r} (known: {all_platforms()})"
+                f"unknown platform {name!r} (known: {sorted(_FACTORIES.keys())})"
             )
         if name not in seen:
             seen.add(name)

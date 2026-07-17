@@ -53,6 +53,13 @@ _ADL_ANSWER_START_RE = re.compile(
     r'(?i)<div[^>]+class="[^"]*(?:n6owBd|LangJde|wDYxhc|IVvmDb|pWvJNd)[^"]*"'
 )
 
+# Strip <style>...</style> and <script>...</script> before anchor matching.
+# Class names in CSS/JS files can otherwise collide with our answer-container
+# selector and cause us to walk a style block instead of the AI overview.
+_STYLE_SCRIPT_RE = re.compile(
+    r"(?is)<(style|script)[^>]*>.*?</\1>"
+)
+
 # Div-nesting counters used by _extract_div_block.
 _DIV_OPEN_RE = re.compile(r"(?i)<div[\s>]")
 _DIV_CLOSE_RE = re.compile(r"(?i)</div>")
@@ -177,17 +184,35 @@ def parse_google_fragment(body: bytes) -> tuple[str, list[str]]:
 
     Ports Go's parseGoogleFragment. Content via div-depth-tracked block
     extraction; links via href regex over the full body (class-independent).
+
+    Candidate selection: enumerate ALL divs matching the anchor regex, extract
+    each, then pick the candidate with the most citation links inside. This
+    guards against class-name collisions with <style> blocks on the same page.
     """
     raw = body.decode("utf-8", errors="replace")
 
-    content = ""
-    answer_html = _extract_div_block(raw, _ADL_ANSWER_START_RE)
-    if answer_html:
-        text = _HTML_TAG_RE.sub(" ", answer_html)
-        text = _WHITESPACE_RE.sub(" ", text).strip()
-        if len(text) >= 80:
-            content = text
+    # Remove <style>...</style> and <script>...</script> blocks up front so
+    # our div-anchor regex can't match class-name references inside CSS/JS.
+    stripped = _STYLE_SCRIPT_RE.sub("", raw)
 
+    # Find every candidate div-block matching the anchor and score each by
+    # its citation-link count. Pick the best-scoring candidate.
+    best_content = ""
+    best_score = -1
+    for m in _ADL_ANSWER_START_RE.finditer(stripped):
+        block_html = _walk_div_block(stripped, m.start(), m.end())
+        if not block_html:
+            continue
+        score = len(_HREF_RE.findall(block_html))
+        if score > best_score:
+            best_score = score
+            text = _HTML_TAG_RE.sub(" ", block_html)
+            text = _WHITESPACE_RE.sub(" ", text).strip()
+            if len(text) >= 80:
+                best_content = text
+
+    # Extract links from the FULL raw body (not stripped) — matches original
+    # behaviour; link extraction is always class-independent.
     links: list[str] = []
     seen: set[str] = set()
     for m in _HREF_RE.finditer(raw):
@@ -199,22 +224,14 @@ def parse_google_fragment(body: bytes) -> tuple[str, list[str]]:
         seen.add(u)
         links.append(u)
 
-    return content, links
+    return best_content, links
 
 
-def _extract_div_block(raw: str, anchor: re.Pattern[str]) -> str:
-    """Find opening tag matching anchor, then walk forward counting <div>
-    opens/closes to find its matching closing tag. Returns the full HTML
-    of that div block.
-
-    Ports Go's extractDivBlock. More reliable than a byte window.
-    """
-    m = anchor.search(raw)
-    if m is None:
-        return ""
-
-    start = m.start()
-    pos = m.end()  # scan after the opening tag
+def _walk_div_block(raw: str, start: int, after_opening_tag: int) -> str:
+    """Walk forward from `after_opening_tag`, tracking div nesting depth.
+    Return the full HTML from `start` to the matching closing </div>.
+    Returns empty string if the block doesn't close cleanly."""
+    pos = after_opening_tag
     depth = 1
 
     while pos < len(raw) and depth > 0:
@@ -237,9 +254,14 @@ def _extract_div_block(raw: str, anchor: re.Pattern[str]) -> str:
             if depth == 0:
                 return raw[start:pos]
 
-    # depth never reached 0 — truncate at 80 KB from anchor
-    end = min(start + 80_000, len(raw))
-    return raw[start:end]
+    return ""
+
+def _extract_div_block(raw: str, anchor: re.Pattern[str]) -> str:
+    """Find the first match of anchor, then walk the div block."""
+    m = anchor.search(raw)
+    if m is None:
+        return ""
+    return _walk_div_block(raw, m.start(), m.end())
 
 
 def _clean_links(links: list[str]) -> list[str]:

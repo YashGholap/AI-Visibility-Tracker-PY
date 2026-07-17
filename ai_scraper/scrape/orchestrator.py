@@ -40,8 +40,10 @@ async def run_query(
             except asyncio.TimeoutError:
                 log.warning("[%s] timed out after %.0fs", name, per_platform_timeout_s)
                 return None
-            except Exception:  # noqa: BLE001
-                log.exception("[%s] scrape failed", name)
+            except Exception as e:  # noqa: BLE001
+                log.exception("[%s] scrape failed: %r", name, e)
+                import traceback
+                traceback.print_exc()
                 return None
 
     results = await asyncio.gather(*(_one(name) for name in resolved))

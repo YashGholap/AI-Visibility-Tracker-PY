@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 def get_visibility_queries(
     engine: Engine,
     project_id: str = "", 
+    limit: int = 0,
 ) -> list[VisibilityQuery]:
     """Fetch queries from ai_visibility_queries.
 
@@ -25,6 +26,9 @@ def get_visibility_queries(
     if project_id:
         sql += " WHERE project_id = :project_id"
         params["project_id"] = project_id
+    if limit > 0:
+        sql +=" LIMIT :query_limit"
+        params["query_limit"] = limit
 
     with engine.connect() as conn:
         rows = conn.execute(text(sql), params).fetchall()
