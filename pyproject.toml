@@ -39,3 +39,7 @@ markers = [
     "slow: marks tests as slow (network / browser). Skipped by default.",
 ]
 addopts = "-m 'not slow'"
+# NOTE: When running slow tests (Playwright), invoke pytest with -p no:asyncio.
+# pytest-asyncio's event loop setup breaks Chromium's connection lifecycle
+# and produces ERR_NETWORK_CHANGED. See tests/test_google_smoke.py.
+# xvfb-run -a uv run pytest tests/test_google_smoke.py -v -m slow -s -p no:asyncio
