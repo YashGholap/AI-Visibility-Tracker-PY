@@ -12,5 +12,7 @@ wheels/
 
 .env
 .env.beta
+.env.prod
+logs
 
 tools

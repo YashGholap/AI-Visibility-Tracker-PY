@@ -13,4 +13,6 @@ export ENV_FILE
 
 # xvfb-run provides a virtual display so headless Chromium doesn't get
 # flagged by Google's antibot. -a picks a free display number.
+export PATH="/snap/bin:$HOME/.local/bin:$PATH"
+
 exec xvfb-run -a uv run ai-scraper "$@"

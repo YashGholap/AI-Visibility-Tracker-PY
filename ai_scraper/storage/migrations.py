@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import Engine , text
+from sqlalchemy.exc import OperationalError
 
 from ai_scraper.schema import (
     CARRIED_FIELDS,
@@ -75,12 +76,29 @@ def _add_column(
     ddl_type: str,
     nullable: bool = True,
 ) -> None:
-    """Add a single column via ALTER TABLE."""
+    """Add a single column via ALTER TABLE.
+
+    Idempotent: if the column already exists (MySQL errno 1060), treat as
+    success. This can happen when two migrator processes race between the
+    existing-columns SELECT and this ALTER.
+    """
     null = "NULL" if nullable else "NOT NULL"
     sql = text(f"ALTER TABLE {qualified_table} ADD COLUMN {column_name} {ddl_type} {null}")
-    with engine.begin() as conn:
-        conn.execute(sql)
-    log.info("added column %s to %s", column_name, qualified_table)
+    try:
+        with engine.begin() as conn:
+            conn.execute(sql)
+        log.info("added column %s to %s", column_name, qualified_table)
+    except OperationalError as e:
+        errno = None
+        if hasattr(e, "orig") and hasattr(e.orig, "args") and e.orig.args:
+            errno = e.orig.args[0]
+        if errno == 1060:
+            log.warning(
+                "column %s.%s already exists (concurrent migration), ignoring",
+                qualified_table, column_name,
+            )
+            return
+        raise
 
 
 def _run_ddl(engine: Engine, ddl: str) -> None:
