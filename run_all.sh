@@ -19,6 +19,16 @@ if [[ ! -f "$ENV_FILE" ]]; then
     exit 1
 fi
 
+# Prevent overlapping runs — if another instance is running (e.g. last
+# week's scrape is still going when Monday's cron fires), exit cleanly
+# instead of creating a concurrent migration race or duplicate rows.
+LOCK_FILE="/tmp/ai_scraper_run_all.lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    echo "$(date -Is)  ERROR: another run_all.sh is already running, exiting" >&2
+    exit 1
+fi
+
 echo "======================================================================"
 echo "$(date -Is)  AI visibility weekly run  env=$ENV_FILE"
 echo "======================================================================"
