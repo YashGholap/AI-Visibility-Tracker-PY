@@ -123,7 +123,7 @@ class OnDemandRequest(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
 
-    run_id: str
+    run_id: int
     platforms: list[str] = Field(default_factory=list)
     queries: list[str]
     competitors: list[str] = Field(default_factory=list)
@@ -141,7 +141,7 @@ class OnDemandStatus(BaseModel):
     onDemandStatus exactly."""
     model_config = ConfigDict(extra="forbid")
 
-    run_id: str
+    run_id: int
     status: str # "ok" | "partial" | "error"
     queries_processed: int = 0
     rows_inserted: int = 0
