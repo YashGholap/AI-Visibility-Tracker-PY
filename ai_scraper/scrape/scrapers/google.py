@@ -106,6 +106,20 @@ class GoogleAIScraper:
 
         page.on("response", _on_response)
 
+        # ── Phase 1.5: homepage warm-up ────────────────────────────────────
+        # Cold Chromium hitting a udm=50 URL directly is flagged aggressively.
+        # Land on the homepage first so Google sees a normal session origin
+        # (sets NID/consent cookies, establishes a referer) before the search.
+        # Best-effort: a warm-up failure must not abort the scrape.
+        try:
+            await page.goto("https://www.google.com/", timeout=30_000)
+            await page.wait_for_load_state("domcontentloaded", timeout=10_000)
+            await asyncio.sleep(1.0)
+            await page.mouse.wheel(0, 300)
+            await asyncio.sleep(0.5)
+        except Exception as e:  # noqa: BLE001
+            log.debug("google: homepage warm-up failed: %s", e)
+
         # ── Phase 2: navigate to the AI Mode URL ───────────────────────────
         search_url = (
             f"https://www.google.com/search?q={quote_plus(query)}&udm=50"
