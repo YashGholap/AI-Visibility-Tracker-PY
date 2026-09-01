@@ -50,6 +50,18 @@ class Config(BaseSettings):
         ge=0,
     )
 
+    query_concurrency: int =  Field(
+        default=1,
+        description=(
+            "How many queries to scrape concurrently. Each query internally "
+            "runs all requested platforms in parallel. Total concurrent "
+            "browser contexts = query_concurrency * len(platforms). "
+            "Default 1 (sequential). Recommended 3-5 for prod."
+        ),
+        ge=1,
+        le=20,
+    )
+
     # --- splitter ---
     max_competitors: int = Field(default=10, ge=1, le=50)
     output_schema: str = Field(default="app_ranking")
@@ -57,7 +69,7 @@ class Config(BaseSettings):
     process_all_projects: bool = Field(default=True)
 
     # --- browser ---
-    browser_headless: bool = Field(default=True)
+    browser_headless: bool = Field(default=False)
     browser_pool_size: int = Field(default=1, ge=1, le=8)
     per_platform_timeout_seconds: int = Field(default=180, ge=30, le=600)
 

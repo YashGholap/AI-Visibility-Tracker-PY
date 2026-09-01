@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import Engine
+import asyncio
 
 from ai_scraper.config import Config
 from ai_scraper.models import ScrapeResult
@@ -58,54 +59,86 @@ async def run_cron(engine: Engine, config: Config) -> int:
     if not queries:
         return 0
 
-    inserted = 0
+    concurrency = max(1, config.query_concurrency)
+    log.info("Cron: query concurrency=%d", concurrency)
+
     async with open_pool(headless=config.browser_headless) as pool:
-        for i, q in enumerate(queries, start=1):
-            log.info(
-                "cron: [%d/%d] project=%s query=%r",
-                i, len(queries), q.project_id, q.query,
-            )
+        semaphore = asyncio.Semaphore(concurrency)
+        total = len(queries)
+        counter = {"started": 0, "done": 0, "inserted": 0}
 
-            pending = [
-                p for p in resolved_platforms
-                if not is_already_scraped(engine, q.project_id, q.query, p)
-            ]
-            if not pending:
-                log.info("cron: all platforms already scraped today, skipping")
-                continue
+        async def _process(q) -> None:
+            async with semaphore:
+                counter["started"] += 1
+                idx = counter["started"]
+                log.info(
+                    "cron: [%d/%d] START project=%s query=%r",
+                    idx, total, q.project_id, q.query,
+                )
 
-            results = await run_query(
-                q.query,
-                pending,
-                pool,
-                per_platform_timeout_s=config.per_platform_timeout_seconds,
-            )
-
-            enriched: list[ScrapeResult] = []
-            for r in results:
-                # Drop only if BOTH content and links are empty — a scrape
-                # with content but no links is still useful for mention
-                # counting analytics; drop only when nothing was captured.
-                if not r.internal_links and not r.response_text:
-                    log.warning(
-                        "cron: dropping empty result  source=%s query=%r",
-                        r.source, r.query,
+                pending = [
+                    p for p in resolved_platforms
+                    if not is_already_scraped(engine, q.project_id, q.query, p)
+                ]
+                if not pending:
+                    log.info(
+                        "cron: [%d/%d] all platforms already scraped, skipping",
+                        idx, total,
                     )
-                    continue
-                if not r.internal_links:
-                    log.warning(
-                        "cron: no links extracted (keeping row)  source=%s query=%r links=0",
-                        r.source, r.query,
+                    counter["done"] = 1
+                    return
+                try:
+                    results = await run_query(
+                        q.query,
+                        pending,
+                        pool,
+                        per_platform_timeout_s=config.per_platform_timeout_seconds
                     )
-                r.project_id = q.project_id
-                r.category = q.category
-                r.intent = q.intent
-                r.search_volume = q.search_volume
-                enriched.append(r)
+                except Exception: # noqa: BLE001
+                    log.exception(
+                        "cron: [%d/%d] run_query crashed  project=%s query=%r",
+                        idx, total, q.project_id, q.query,
+                    )
+                    counter["done"] += 1
+                    return
+                
+                enriched: list[ScrapeResult] = []
+                for r in results:
+                    if not r.internal_links and not r.response_text:
+                        log.warning(
+                            "cron: [%d/%d] dropping empty result  source=%s query=%r",
+                            idx, total, r.source, r.query,
+                        )
+                        continue
+                    if not r.internal_links:
+                        log.warning(
+                            "cron: [%d/%d] no links extracted (keeping row)  "
+                            "source=%s query=%r links=0",
+                            idx, total, r.source, r.query,
+                        )
+                    r.project_id = q.project_id
+                    r.category = q.category
+                    r.intent = q.intent
+                    r.search_volume = q.search_volume
+                    enriched.append(r)
+                
+                if enriched:
+                    try:
+                        insert_results(engine, enriched)
+                        counter["inserted"] += len(enriched)
+                        log.info(
+                            "cron: [%d/%d] DONE inserted=%d",
+                            idx, total, len(enriched),
+                        )
+                    except Exception:   # noqa: BLE001
+                        log.exception(
+                            "cron: [%d/%d] insert failed  project=%s query=%r",
+                            idx, total, q.project_id, q.query,
+                        )
+                counter["done"] += 1
 
-            if enriched:
-                insert_results(engine, enriched)
-                inserted += len(enriched)
+        await asyncio.gather(*(_process(q) for q in queries))
+        inserted = counter["inserted"]
 
     log.info("cron: done  inserted=%d", inserted)
     return inserted
