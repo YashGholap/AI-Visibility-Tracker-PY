@@ -44,7 +44,13 @@ def _get_platform_semaphore(name: str) -> asyncio.Semaphore:
     return _PLATFORM_SEMAPHORES[name]
 
 
-_MAX_RETRIES = 3
+# Fresh-context retries on a gate. 0 = give up on the platform for the current
+# query and move on. An anonymous/IP gate (Perplexity quota, ChatGPT anon limit)
+# is keyed on the IP, not cookies, so retrying with a fresh context on the same
+# IP just re-hits the gate — on 2026-09-02 all 3 attempts gated identically and
+# a single ChatGPT gate burned 3×90s. Raise this only on a residential IP where
+# the gate is genuinely cookie-based.
+_DEFAULT_GATE_RETRIES = 0
 _GRACE_PERIOD_S = 5.0
 
 
@@ -53,16 +59,18 @@ async def run_query(
     platforms: list[str] | None,
     pool: BrowserPool,
     per_platform_timeout_s: float = 180.0,
+    gate_retries: int = _DEFAULT_GATE_RETRIES,
 ) -> list[ScrapeResult]:
     """Scrape one query across the requested platforms concurrently."""
     resolved = resolve_platforms(platforms)
+    max_attempts = max(1, gate_retries + 1)
 
     async def _one(name: str) -> ScrapeResult | None:
         scraper = get_scraper(name)
         last_error: Exception | None = None
         platform_sem = _get_platform_semaphore(name)
 
-        for attempt in range(_MAX_RETRIES):
+        for attempt in range(1, max_attempts + 1):
             # Acquire per-platform semaphore BEFORE opening a context so we
             # don't waste a browser context waiting for the semaphore.
             async with platform_sem:
@@ -85,18 +93,22 @@ async def run_query(
                             pass
                         return None
                     except NeedsFreshContextError as e:
+                        last_error = e
+                        # Gated. A fresh context won't clear an IP-level gate,
+                        # so unless retries are explicitly enabled we stop here
+                        # and let the run move to the next query.
+                        if attempt >= max_attempts:
+                            break
                         log.warning(
                             "[%s] gated on attempt %d/%d, retrying with fresh context",
-                            name, attempt + 1, _MAX_RETRIES,
+                            name, attempt, max_attempts,
                         )
-                        last_error = e
                     except Exception:  # noqa: BLE001
                         log.exception("[%s] scrape failed", name)
                         return None
 
         log.warning(
-            "[%s] exhausted %d attempts, giving up: %s",
-            name, _MAX_RETRIES, last_error,
+            "[%s] gated, skipping to next query: %s", name, last_error,
         )
         return None
 
