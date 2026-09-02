@@ -29,7 +29,11 @@ async def launch_browser(playwright: Playwright, headless: bool = True) -> Brows
             # stability (matches Go)
             "--disable-gpu",
             "--no-sandbox",
-            "--disable-dev-shm-usage",
+            # NOTE: --disable-dev-shm-usage is deliberately NOT set. It exists
+            # to work around a tiny /dev/shm (Docker's 64 MiB default) by
+            # pushing Chromium's shared memory into /tmp as regular files. On
+            # the scrape host /dev/shm is 126 GiB and sits completely unused,
+            # so the flag only bought us slower, disk-backed shared memory.
             # performance / noise reduction (matches Go)
             "--disable-extensions",
             "--disable-infobars",

@@ -13,19 +13,22 @@ log = logging.getLogger(__name__)
 
 def get_visibility_queries(
     engine: Engine,
-    project_id: str = "", 
+    project_id: str = "",
     limit: int = 0,
 ) -> list[VisibilityQuery]:
     """Fetch queries from ai_visibility_queries.
 
-    project_id: filter to a specific project; empty string = all projects.
-    Ports the Go GetVisibiltyQueries function.
+    project_id: filter to specific project(s). Accepts one ID or a
+    comma-separated list (e.g. "proj_a" or "proj_a,proj_b"); empty string
+    means all projects. Ports the Go GetVisibiltyQueries function.
     """
     sql = "SELECT project_id, query, category, intent, search_volume FROM ai_visibility_queries"
-    params: dict[str, str] = {}
-    if project_id:
-        sql += " WHERE project_id = :project_id"
-        params["project_id"] = project_id
+    params: dict[str, object] = {}
+    ids = [p.strip() for p in project_id.split(",") if p.strip()]
+    if ids:
+        placeholders = ", ".join(f":pid{i}" for i in range(len(ids)))
+        sql += f" WHERE project_id IN ({placeholders})"
+        params.update({f"pid{i}": pid for i, pid in enumerate(ids)})
     if limit > 0:
         sql +=" LIMIT :query_limit"
         params["query_limit"] = limit

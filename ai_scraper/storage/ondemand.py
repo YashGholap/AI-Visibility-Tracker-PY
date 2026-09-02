@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 def insert_ondemand_result(
     engine: Engine,
-    run_id: str,
+    run_id: int,
     result: ScrapeResult,
     competitor_rankings: dict[str, int] | None,
 ) -> None:
@@ -54,7 +54,7 @@ def insert_ondemand_result(
 
 def is_already_inserted_ondemand(
     engine: Engine,
-    run_id: str,
+    run_id: int,
     query: str,
     source: str,
 ) -> bool:

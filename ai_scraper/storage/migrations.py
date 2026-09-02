@@ -132,7 +132,7 @@ def ensure_ai_visibility(engine: Engine) -> None:
 _ONDEMAND_DDL = """
 CREATE TABLE IF NOT EXISTS ai_visibility_ondemand (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    run_id VARCHAR(255),
+    run_id INT,
     query TEXT,
     source VARCHAR(50),
     internal_links JSON,
@@ -213,3 +213,29 @@ def ensure_project_table(
                 _add_column(engine, qualified, col, ddl_type, nullable=True)
 
     return qualified
+
+# ----------------------------------------------------------------------------
+# ondemand_chunks.
+# ----------------------------------------------------------------------------
+_ONDEMAND_CHUNKS_DDL = """
+CREATE TABLE IF NOT EXISTS ondemand_chunks (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    run_id        INT          NOT NULL,
+    chunk_index   INT          NOT NULL,
+    status        VARCHAR(50)  NOT NULL DEFAULT 'pending',
+    rows_inserted INT          NOT NULL DEFAULT 0,
+    error         TEXT,
+    created_at    DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_run_chunk (run_id, chunk_index)
+)
+""".strip()
+
+
+def ensure_ondemand_chunks_table(engine: Engine) -> None:
+    """Create ondemand_chunks if it doesn't exist.
+
+    Backend inserts rows here when creating a run, one per chunk. Scraper
+    updates status/rows_inserted/error as chunks progress.
+    """
+    _run_ddl(engine, _ONDEMAND_CHUNKS_DDL)
