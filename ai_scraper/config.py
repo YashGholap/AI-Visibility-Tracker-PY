@@ -73,6 +73,25 @@ class Config(BaseSettings):
     browser_pool_size: int = Field(default=1, ge=1, le=8)
     per_platform_timeout_seconds: int = Field(default=180, ge=30, le=600)
 
+    browser_block_media: bool = Field(
+        default=False,
+        description=(
+            "Abort image/font/media requests in every browser context. Saves "
+            "bandwidth, but blocking images is a known bot signal and Google "
+            "already captchas this IP heavily, so it stays off by default. "
+            "Enable only if bandwidth becomes the constraint."
+        ),
+    )
+    browser_recycle_after_contexts: int = Field(
+        default=150,
+        description=(
+            "Relaunch Chromium after this many leased contexts. Bounds how "
+            "much state — memory, file descriptors, threads — one process can "
+            "accumulate over an 8-hour run. 0 disables."
+        ),
+        ge=0,
+    )
+
 
 def load_config() -> Config:
     """Load config, honoring the ENV_FILE env var like the Go binary does."""
