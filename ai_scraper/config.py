@@ -54,6 +54,19 @@ class Config(BaseSettings):
         ge=0,
     )
 
+    gate_retries: int = Field(
+        default=0,
+        description=(
+            "Fresh-context retries when a platform reports a gate. 0 (default) "
+            "gives up on that platform for the current query and moves to the "
+            "next one — an anonymous/IP gate won't clear with a fresh context "
+            "on the same IP. Raise only on a residential IP where gates are "
+            "cookie-based."
+        ),
+        ge=0,
+        le=3,
+    )
+
     query_concurrency: int =  Field(
         default=1,
         description=(

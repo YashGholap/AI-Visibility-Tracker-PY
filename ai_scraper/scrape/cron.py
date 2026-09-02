@@ -179,7 +179,8 @@ async def run_cron(engine: Engine, config: Config) -> int:
                         q.query,
                         pending,
                         pool,
-                        per_platform_timeout_s=config.per_platform_timeout_seconds
+                        per_platform_timeout_s=config.per_platform_timeout_seconds,
+                        gate_retries=config.gate_retries,
                     )
                 except PlaywrightError as e:
                     # The pool relaunches Chromium when it dies, so reaching
