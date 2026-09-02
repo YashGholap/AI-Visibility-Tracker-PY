@@ -63,6 +63,18 @@ def test_get_visibility_queries_filtered(queries_table: Engine):
     assert all(q.project_id == "proj_a" for q in qs)
 
 
+def test_get_visibility_queries_filtered_list(queries_table: Engine):
+    qs = get_visibility_queries(queries_table, project_id="proj_a,proj_b")
+    assert len(qs) == 3
+    assert {q.project_id for q in qs} == {"proj_a", "proj_b"}
+
+
+def test_get_visibility_queries_filtered_list_whitespace(queries_table: Engine):
+    # Tolerate spaces around commas, as a human-typed PROJECT_ID would have.
+    qs = get_visibility_queries(queries_table, project_id=" proj_b , proj_a ")
+    assert {q.project_id for q in qs} == {"proj_a", "proj_b"}
+
+
 def test_get_visibility_queries_populates_fields(queries_table: Engine):
     qs = get_visibility_queries(queries_table, project_id="proj_b")
     q = qs[0]

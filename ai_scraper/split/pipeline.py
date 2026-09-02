@@ -195,19 +195,19 @@ def run_split(engine: Engine, config: Config) -> list[ProjectSummary]:
     Errors on one project do not abort the run — each project's outcome
     ends up in its own ProjectSummary.
     """
-    project_ids: list[str] | None = None
-    if not config.process_all_projects and config.project_id:
-        project_ids = [config.project_id]
-    elif config.project_id:
-        # process_all_projects=True + project_id set → treat as filter.
-        project_ids = [config.project_id]
+    # One ID, a comma-separated list, or empty (= all projects). load_projects
+    # already handles the IN-clause filtering; None means no filter.
+    project_ids = config.project_id_list() or None
 
     projects = load_projects(
         engine=engine,
         max_competitors=config.max_competitors,
         project_ids=project_ids,
     )
-    log.info("loaded %d projects", len(projects))
+    log.info(
+        "loaded %d projects (filter=%s)",
+        len(projects), ",".join(project_ids) if project_ids else "all",
+    )
 
     return [split_one_project(engine, p, config) for p in projects]
 

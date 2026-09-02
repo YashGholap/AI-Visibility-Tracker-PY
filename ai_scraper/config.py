@@ -37,7 +37,11 @@ class Config(BaseSettings):
     # --- scrape/split filtering ---
     project_id: str = Field(
         default="",
-        description="Filter to one project ID; empty = all projects.",
+        description=(
+            "Filter to specific project ID(s). Accepts one ID or a "
+            "comma-separated list (e.g. 'E96B3E' or 'E96B3E,3632AE'). "
+            "Empty = all projects. Applies to both scrape and split."
+        ),
     )
     platforms: str = Field(
         default="",
@@ -91,6 +95,15 @@ class Config(BaseSettings):
         ),
         ge=0,
     )
+
+
+    def project_id_list(self) -> list[str]:
+        """Parse project_id (one ID or comma-separated) into a list.
+
+        Empty list means "all projects". Used by both the scrape and split
+        flows so a single PROJECT_ID setting drives both.
+        """
+        return [p.strip() for p in self.project_id.split(",") if p.strip()]
 
 
 def load_config() -> Config:
